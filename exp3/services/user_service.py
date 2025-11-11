@@ -96,8 +96,26 @@ class UserService:
         # 1. 查询用户
         # 2. 验证密码
         # 3. 返回用户信息
-        pass
-    
+
+        # query user info
+        users = self.db.execute_query(
+            "SELECT * FROM users WHERE username=?",
+            (username,)
+        )
+        if not users:
+            print("User not found.")
+            return None
+        
+        user = users[0]  # execute_query 返回列表，取第一个元素
+
+        # verify password
+        from utils.helpers import Helper
+        if not Helper.verify_password(password, user['password']):
+            print("Invalid password.")
+            return None
+
+        return user
+
     def get_user_by_id(self, user_id: int) -> Optional[User]:
         """
         根据ID获取用户

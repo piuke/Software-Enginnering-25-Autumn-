@@ -130,7 +130,12 @@ class AnimeShoppingMall:
         password = input("密码: ").strip()
         
         # TODO: 调用用户服务登录
-        print("登录功能待实现...")
+        user = self.user_service.login(username, password)
+        if user:
+            self.current_user = user
+            print(f"登录成功! 欢迎 {user['username']}.")
+        else:
+            print("登录失败,用户名或密码错误.")
     
     def logout(self):
         """注销登录"""
