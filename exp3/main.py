@@ -37,7 +37,7 @@ class AnimeShoppingMall:
         """显示系统标题"""
         print("=" * 50)
         print(t('system.banner'))
-        print(f"版本: {SYSTEM_CONFIG['version']}")
+        print(f"{t('common.version')}: {SYSTEM_CONFIG['version']}")
         print("=" * 50)
     
     def main_menu(self):
@@ -87,7 +87,7 @@ class AnimeShoppingMall:
                 elif choice == '4':
                     self.search_products_menu()
                 else:
-                    print("无效选择,请重试")
+                    print(t('common.invalid_choice'))
             else:
                 if choice == '1':
                     self.browse_products_menu()
@@ -115,9 +115,9 @@ class AnimeShoppingMall:
         print("\n" + "=" * 50)
         print(f"{t('system.language_selection')} / Language Selection")
         print("=" * 50)
-        print("1. 简体中文 (Simplified Chinese)")
-        print("2. English")
-        print("3. 日本語 (Japanese)")
+        print(f"1. {t('system.lang_zh_cn')}")
+        print(f"2. {t('system.lang_en_us')}")
+        print(f"3. {t('system.lang_ja_jp')}")
         print(f"0. {t('common.back')}")
         
         choice = input(f"\n{t('common.please_select')} / Please select: ").strip()
@@ -367,10 +367,19 @@ class AnimeShoppingMall:
             print(f"{t('product.views')}: {product.view_count}")
             print(f"{t('product.favorites')}: {product.favorite_count}")
             
+            # 显示卖家信息
+            seller_info = self.db_manager.execute_query(
+                "SELECT s.shop_name, u.username FROM sellers s JOIN users u ON s.user_id = u.user_id WHERE s.seller_id = ?",
+                (product.seller_id,)
+            )
+            if seller_info:
+                print(f"\n🏪 {t('message.seller_label')}: {seller_info[0]['shop_name']} (@{seller_info[0]['username']})")
+            
             if self.current_user:
                 print(f"\n{'='*50}")
                 print(f"1. {t('favorite.add_to_favorites')}")
                 print(f"2. {t('order.buy_now')}")
+                print(f"3. 💬 {t('message.contact_seller')}")  # 新增：联系卖家
                 print(f"0. {t('common.back')}")
                 
                 action = input(f"\n{t('common.please_select')}: ").strip()
@@ -382,6 +391,20 @@ class AnimeShoppingMall:
                         print(t('favorite.already_added'))
                 elif action == '2':
                     print(t('system.feature_not_implemented'))
+                elif action == '3':
+                    # 联系卖家
+                    seller_user = self.db_manager.execute_query(
+                        "SELECT user_id FROM sellers WHERE seller_id = ?",
+                        (product.seller_id,)
+                    )
+                    if seller_user:
+                        seller_user_id = seller_user[0]['user_id']
+                        # 防止自己联系自己
+                        if seller_user_id == self.current_user['user_id']:
+                            print(t('common.cannot_message_self'))
+                        else:
+                            # 直接打开与卖家的会话
+                            self._conversation_menu(self.current_user['user_id'], seller_user_id)
             else:
                 input(f"\n{t('common.press_enter')}")
                 
@@ -626,10 +649,324 @@ class AnimeShoppingMall:
         print(t('system.feature_not_implemented'))
     
     def messages_menu(self):
-        """消息菜单"""
-        print(f"\n--- {t('message.messages')} ---")
-        # TODO: 实现消息功能
-        print(t('system.feature_not_implemented'))
+        """消息菜单 - Telegram风格联系人列表"""
+        if not self.current_user:
+            print(t('user.please_login'))
+            return
+
+        user_id = self.current_user['user_id']
+        while True:
+            unread_total = self.message_service.get_unread_count(user_id)
+            print(f"\n{'='*50}")
+            print(f"--- {t('message.messages')} ---")
+            print(t('message.unread_total', count=unread_total))
+            print(f"{'='*50}")
+            print(f"1. {t('message.contacts')}")  # 默认联系人列表
+            print(f"2. {t('message.search_users')}")  # 搜索用户开始聊天
+            print(f"3. {t('message.search_messages')}")  # 搜索消息内容
+            print(f"0. {t('common.back')}")
+
+            choice = input(f"\n{t('common.please_select')}: ").strip()
+            if choice == '0':
+                break
+            elif choice == '1':
+                self._contacts_list_menu(user_id)  # 重命名为联系人列表
+            elif choice == '2':
+                self._search_users_and_chat(user_id)  # 新功能：搜索用户并聊天
+            elif choice == '3':
+                self._search_messages_flow(user_id)
+            else:
+                print(t('common.invalid_choice'))
+
+    def _contacts_list_menu(self, user_id: int):
+        """联系人列表 - Telegram风格"""
+    def _contacts_list_menu(self, user_id: int):
+        """联系人列表 - Telegram风格"""
+        rows = self.message_service.get_user_messages(user_id, limit=50)
+        
+        # 构建联系人列表（按最后消息时间排序）
+        contacts = []
+        for row in rows:
+            peer_id = row['receiver_id'] if row['sender_id'] == user_id else row['sender_id']
+            peer = self._get_user_by_id(peer_id)
+            if not peer:
+                continue
+            
+            peer_name = peer['username']
+            unread_from_peer = self._get_unread_from_peer(user_id, peer_id)
+            
+            # 检查是否是卖家
+            seller_info = self.db_manager.execute_query(
+                "SELECT shop_name FROM sellers WHERE user_id = ?",
+                (peer_id,)
+            )
+            is_seller = len(seller_info) > 0
+            shop_name = seller_info[0]['shop_name'] if is_seller else None
+            
+            contacts.append({
+                'peer_id': peer_id,
+                'peer_name': peer_name,
+                'shop_name': shop_name,
+                'is_seller': is_seller,
+                'last': row,
+                'unread': unread_from_peer,
+            })
+
+        while True:
+            print(f"\n{'='*50}")
+            print(f"📱 {t('message.contacts')}")
+            print(f"{'='*50}")
+            
+            if not contacts:
+                print(t('message.no_conversations'))
+                print(f"\n💡 {t('message.search_users')} → 2")
+                print(f"0. {t('common.back')}")
+                choice = input(f"\n{t('common.please_select')}: ").strip()
+                if choice == '0':
+                    break
+                elif choice == '2':
+                    # 跳转到搜索用户
+                    self._search_users_and_chat(user_id)
+                    # 刷新联系人列表
+                    rows = self.message_service.get_user_messages(user_id, limit=50)
+                    contacts = []
+                    for row in rows:
+                        peer_id = row['receiver_id'] if row['sender_id'] == user_id else row['sender_id']
+                        peer = self._get_user_by_id(peer_id)
+                        if not peer:
+                            continue
+                        peer_name = peer['username']
+                        unread_from_peer = self._get_unread_from_peer(user_id, peer_id)
+                        seller_info = self.db_manager.execute_query(
+                            "SELECT shop_name FROM sellers WHERE user_id = ?", (peer_id,)
+                        )
+                        is_seller = len(seller_info) > 0
+                        shop_name = seller_info[0]['shop_name'] if is_seller else None
+                        contacts.append({
+                            'peer_id': peer_id,
+                            'peer_name': peer_name,
+                            'shop_name': shop_name,
+                            'is_seller': is_seller,
+                            'last': row,
+                            'unread': unread_from_peer,
+                        })
+                continue
+            
+            for i, c in enumerate(contacts, 1):
+                last = c['last']
+                prefix = t('message.me_label') if last['sender_id'] == user_id else c['peer_name']
+                content = (last['content'] or '')
+                content = content if len(content) <= 25 else content[:22] + '...'
+                ts = last.get('created_at', '')
+                
+                # 未读徽标
+                unread_badge = f"🔴{c['unread']}" if c['unread'] else ''
+                
+                # 卖家标识
+                seller_badge = f"🏪{c['shop_name']}" if c['is_seller'] else ''
+                
+                # 组合显示
+                display_name = c['peer_name']
+                if seller_badge:
+                    display_name = f"{display_name} [{seller_badge}]"
+                
+                print(f"{i}. {display_name}")
+                print(f"   {prefix}: {content} {unread_badge}")
+                print(f"   {ts}")
+            
+            print(f"\n{'='*50}")
+            print(f"1-{len(contacts)}: {t('common.view_details')}")
+            print(f"0. {t('common.back')}")
+
+            sel = input(f"\n{t('common.please_select')}: ").strip()
+            if sel == '0':
+                break
+            if sel.isdigit() and 1 <= int(sel) <= len(contacts):
+                self._conversation_menu(user_id, contacts[int(sel)-1]['peer_id'])
+                # 刷新联系人列表
+                rows = self.message_service.get_user_messages(user_id, limit=50)
+                contacts = []
+                for row in rows:
+                    peer_id = row['receiver_id'] if row['sender_id'] == user_id else row['sender_id']
+                    peer = self._get_user_by_id(peer_id)
+                    if not peer:
+                        continue
+                    peer_name = peer['username']
+                    unread_from_peer = self._get_unread_from_peer(user_id, peer_id)
+                    seller_info = self.db_manager.execute_query(
+                        "SELECT shop_name FROM sellers WHERE user_id = ?", (peer_id,)
+                    )
+                    is_seller = len(seller_info) > 0
+                    shop_name = seller_info[0]['shop_name'] if is_seller else None
+                    contacts.append({
+                        'peer_id': peer_id,
+                        'peer_name': peer_name,
+                        'shop_name': shop_name,
+                        'is_seller': is_seller,
+                        'last': row,
+                        'unread': unread_from_peer,
+                    })
+            else:
+                print(t('common.invalid_choice'))
+
+    def _search_users_and_chat(self, user_id: int):
+        """搜索用户并开始聊天"""
+        print(f"\n{'='*50}")
+        print(f"🔍 {t('message.search_users')}")
+        print(f"{'='*50}")
+        
+        keyword = input(f"{t('message.enter_username')}: ").strip()
+        if not keyword:
+            print(t('common.cancelled'))
+            return
+        
+        # 搜索用户（模糊匹配）
+        users = self.db_manager.execute_query(
+            "SELECT user_id, username, email FROM users WHERE username LIKE ? AND user_id != ? LIMIT 20",
+            (f"%{keyword}%", user_id)
+        )
+        
+        if not users:
+            print(t('message.no_users_found'))
+            return
+        
+        print(f"\n{t('message.user_search_results')}:")
+        for i, user in enumerate(users, 1):
+            # 检查是否是卖家
+            seller_info = self.db_manager.execute_query(
+                "SELECT shop_name FROM sellers WHERE user_id = ?",
+                (user['user_id'],)
+            )
+            seller_badge = f" [🏪{seller_info[0]['shop_name']}]" if seller_info else ""
+            print(f"{i}. {user['username']}{seller_badge}")
+        
+        print(f"0. {t('common.back')}")
+        
+        choice = input(f"\n{t('common.please_select')}: ").strip()
+        if choice == '0':
+            return
+        
+        if choice.isdigit() and 1 <= int(choice) <= len(users):
+            selected_user = users[int(choice) - 1]
+            # 直接打开会话
+            self._conversation_menu(user_id, selected_user['user_id'])
+        else:
+            print(t('common.invalid_choice'))
+
+    def _conversation_menu(self, user_id: int, other_user_id: int):
+        """会话详情菜单"""
+        other = self._get_user_by_id(other_user_id)
+        other_name = other['username'] if other else f"User#{other_user_id}"
+        
+        # 检查是否是卖家
+        seller_info = self.db_manager.execute_query(
+            "SELECT shop_name FROM sellers WHERE user_id = ?",
+            (other_user_id,)
+        )
+        shop_display = f" [🏪{seller_info[0]['shop_name']}]" if seller_info else ""
+        
+        # 自动标记该会话的所有消息为已读
+        self.message_service.mark_conversation_as_read(user_id, other_user_id)
+        
+        while True:
+            rows = self.message_service.get_conversation(user_id, other_user_id, limit=200, offset=0)
+            print(f"\n{'='*50}")
+            print(t('message.conversation_with', username=other_name + shop_display))
+            print(f"{'='*50}")
+            if not rows:
+                print(t('message.no_messages'))
+            else:
+                for r in rows:
+                    mine = (r['sender_id'] == user_id)
+                    sender = t('message.me_label') if mine else other_name
+                    status = r.get('status', '')
+                    read_tag = '' if mine or status == 'read' else f"({t('message.unread_tag')})"
+                    ts = r.get('created_at', '')
+                    print(f"{sender}: {r['content']}  {read_tag}  [{ts}]  ({t('message.message_id_label')}: {r['msg_id']})")
+
+            print(f"\n1. {t('message.send_message')}")
+            print(f"2. {t('message.delete_message')}")
+            print(f"3. {t('message.refresh_conversation')}")
+            print(f"0. {t('common.back')}")
+
+            act = input(f"\n{t('common.please_select')}: ").strip()
+            if act == '0':
+                break
+            elif act == '1':
+                content = input(f"{t('message.content_label')}: ").strip()
+                if content:
+                    try:
+                        self.message_service.send_message(user_id, other_user_id, content)
+                        print(f"✓ {t('message.sent_success')}")
+                    except Exception as e:
+                        print(f"✗ {str(e)}")
+            elif act == '2':
+                msg_id_input = input(f"{t('message.enter_message_id')}: ").strip()
+                if msg_id_input.isdigit():
+                    ok = self.message_service.delete_message(int(msg_id_input), user_id)
+                    print(f"✓ {t('message.delete_success')}" if ok else t('message.delete_failed'))
+                else:
+                    print(t('common.invalid_choice'))
+            elif act == '3':
+                # 刷新会话，重新标记为已读
+                self.message_service.mark_conversation_as_read(user_id, other_user_id)
+                continue
+            else:
+                print(t('common.invalid_choice'))
+
+    def _send_message_flow(self, user_id: int):
+        to_username = input(f"{t('message.receiver_username')}: ").strip()
+        if not to_username:
+            print(t('common.cancelled'))
+            return
+        target = self._get_user_by_name(to_username)
+        if not target:
+            print(t('user.user_not_found', identifier=to_username))
+            return
+        content = input(f"{t('message.content_label')}: ").strip()
+        if not content:
+            print(t('common.cancelled'))
+            return
+        try:
+            self.message_service.send_message(user_id, target['user_id'], content)
+            print(f"✓ {t('message.sent_success')}")
+        except Exception as e:
+            print(f"✗ {str(e)}")
+
+    def _search_messages_flow(self, user_id: int):
+        keyword = input(f"{t('message.search_keyword_label')}: ").strip()
+        if not keyword:
+            print(t('common.cancelled'))
+            return
+        rows = self.message_service.search_messages(user_id, keyword, limit=50)
+        if not rows:
+            print(t('message.no_messages_found'))
+            return
+        print(f"\n{'='*50}")
+        print(t('message.search_found', count=len(rows)))
+        for r in rows:
+            s = self._get_user_by_id(r['sender_id'])
+            sname = s['username'] if s else f"User#{r['sender_id']}"
+            rv = self._get_user_by_id(r['receiver_id'])
+            rname = rv['username'] if rv else f"User#{r['receiver_id']}"
+            ts = r.get('created_at','')
+            content = r['content']
+            print(f"[{r['msg_id']}] {sname} -> {rname}: {content} [{ts}]")
+
+    def _get_user_by_id(self, uid: int):
+        rows = self.db_manager.execute_query("SELECT user_id, username FROM users WHERE user_id=?", (uid,))
+        return rows[0] if rows else None
+
+    def _get_user_by_name(self, username: str):
+        rows = self.db_manager.execute_query("SELECT user_id, username FROM users WHERE username=?", (username,))
+        return rows[0] if rows else None
+
+    def _get_unread_from_peer(self, me: int, peer: int) -> int:
+        rows = self.db_manager.execute_query(
+            "SELECT COUNT(*) AS cnt FROM messages WHERE receiver_id=? AND sender_id=? AND status <> 'read'",
+            (me, peer)
+        )
+        return int(rows[0]['cnt']) if rows else 0
     
     def profile_menu(self):
         """个人中心菜单"""
@@ -639,15 +976,297 @@ class AnimeShoppingMall:
     
     def seller_menu(self):
         """卖家功能菜单"""
-        print(f"\n--- {t('seller.seller_functions')} ---")
-        print(f"1. {t('product.add_product')}")
-        print(f"2. {t('seller.manage_products')}")
-        print(f"3. {t('auction.auction')}")
-        print(f"4. {t('seller.manage_orders')}")
+        if not self.current_user:
+            print(t('user.please_login'))
+            return
         
-        choice = input(f"{t('common.please_select')}: ").strip()
-        # TODO: 实现卖家功能
-        print(t('system.feature_not_implemented'))
+        # 检查当前用户是否是卖家
+        seller_info = self.db_manager.execute_query(
+            "SELECT seller_id, shop_name FROM sellers WHERE user_id = ?",
+            (self.current_user['user_id'],)
+        )
+        
+        if not seller_info:
+            print(f"\n{t('seller.not_seller_error')}")
+            print(t('seller.not_seller_hint'))
+            return
+        
+        seller = seller_info[0]
+        
+        while True:
+            print(f"\n{'='*50}")
+            print(f"--- {t('seller.seller_functions')} ---")
+            print(f"{t('seller.shop_label')}: {seller['shop_name']}")
+            print(f"{'='*50}")
+            print(f"1. {t('product.add_product')}")
+            print(f"2. {t('seller.manage_products')}")
+            print(f"3. {t('auction.auction')}")
+            print(f"4. {t('seller.manage_orders')}")
+            print(f"0. {t('common.back')}")
+            
+            choice = input(f"\n{t('common.please_select')}: ").strip()
+            
+            if choice == '0':
+                break
+            elif choice == '1':
+                self.add_product_menu(seller['seller_id'])
+            elif choice == '2':
+                self.manage_products_menu(seller['seller_id'])
+            elif choice == '3':
+                print(t('system.feature_not_implemented'))
+            elif choice == '4':
+                print(t('system.feature_not_implemented'))
+            else:
+                print(t('common.invalid_choice'))
+    
+    def add_product_menu(self, seller_id: int):
+        """添加商品菜单"""
+        print(f"\n{'='*50}")
+        print(f"--- {t('product.add_product')} ---")
+        print(f"{'='*50}")
+        
+        # 输入商品标题
+        title = input(f"{t('product.title')}: ").strip()
+        if not title:
+            print(t('product.title_required'))
+            return
+        
+        # 输入商品描述
+        description = input(f"{t('product.description')}: ").strip()
+        if not description:
+            print(t('product.description_required'))
+            return
+        
+        # 输入价格
+        try:
+            price_input = input(f"{t('product.price')} (¥): ").strip()
+            price = float(price_input)
+            if price <= 0:
+                print(t('product.price_must_positive'))
+                return
+        except ValueError:
+            print(t('product.price_invalid_format'))
+            return
+        
+        # 选择分类
+        print(f"\n{t('product.select_category')}:")
+        for i, category in enumerate(PRODUCT_CATEGORIES, 1):
+            print(f"{i}. {category}")
+        
+        try:
+            cat_choice = input(f"\n{t('common.please_select')}: ").strip()
+            cat_index = int(cat_choice) - 1
+            if cat_index < 0 or cat_index >= len(PRODUCT_CATEGORIES):
+                print(t('product.category_invalid'))
+                return
+            category = PRODUCT_CATEGORIES[cat_index]
+        except ValueError:
+            print(t('product.category_invalid_format'))
+            return
+        
+        # 输入库存
+        try:
+            stock_input = input(f"{t('product.stock')} ({t('product.stock_default_hint', value=1)}): ").strip()
+            stock = int(stock_input) if stock_input else 1
+            if stock < 0:
+                print(t('product.stock_negative'))
+                return
+        except ValueError:
+            print(t('product.stock_invalid_format'))
+            return
+        
+        # 是否支持拍卖
+        auctionable_input = input(f"{t('product.auctionable_prompt')}: ").strip().lower()
+        auctionable = 1 if auctionable_input == 'y' else 0
+        
+        # 确认创建
+        print(f"\n{'='*50}")
+        print(t('product.preview'))
+        print(f"{t('product.preview_title')}: {title}")
+        print(f"{t('product.preview_description')}: {description}")
+        print(f"{t('product.preview_price')}: ¥{price:.2f}")
+        print(f"{t('product.preview_category')}: {category}")
+        print(f"{t('product.preview_stock')}: {stock}")
+        print(f"{t('product.preview_auctionable')}: {t('common.yes') if auctionable else t('common.no')}")
+        print(f"{'='*50}")
+        
+        confirm = input("\n" + t('product.confirm_create')).strip().lower()
+        
+        if confirm != 'y':
+            print(t('common.cancelled'))
+            return
+        
+        # 创建商品
+        product_data = {
+            'title': title,
+            'description': description,
+            'price': price,
+            'category': category,
+            'stock': stock,
+            'auctionable': auctionable
+        }
+        
+        product_id = self.product_service.create_product(seller_id, product_data)
+        
+        if product_id:
+            print(f"\n{t('product.create_success', product_id=product_id)}")
+        else:
+            print(f"\n{t('product.create_failed')}")
+    
+    def manage_products_menu(self, seller_id: int):
+        """管理商品菜单"""
+        while True:
+            print(f"\n{'='*50}")
+            print(f"--- {t('seller.manage_products')} ---")
+            print(f"{'='*50}")
+            
+            # 获取卖家的所有商品（包括已下架）
+            products = self.product_service.get_products_by_seller(seller_id, include_removed=True)
+            
+            if not products:
+                print(f"\n{t('product.no_products')}")
+                print(f"\n0. {t('common.back')}")
+                choice = input(f"\n{t('common.please_select')}: ").strip()
+                if choice == '0':
+                    break
+                continue
+            
+            print(f"\n{t('product.total_products', count=len(products))}:\n")
+            
+            # 显示商品列表
+            for i, product in enumerate(products, 1):
+                status_display = {
+                    'available': t('product.status_available'),
+                    'sold_out': t('product.status_sold_out'),
+                    'removed': t('product.status_removed')
+                }.get(product['status'], product['status'])
+                
+                print(f"{i}. [{product['product_id']}] {product['title']}")
+                print(f"   {t('product.price')}: ¥{product['price']:.2f} | {t('product.stock')}: {product['stock']} | {t('product.status')}: {status_display}")
+                print(f"   {t('product.category')}: {product['category']} | {t('product.views')}: {product['view_count']} | {t('product.favorites')}: {product['favorite_count']}")
+                print()
+            
+            print(f"{'='*50}")
+            print(f"1-{len(products)}: {t('product.view_edit')}")
+            print(f"0: {t('common.back')}")
+            
+            action = input(f"\n{t('common.please_select')}: ").strip()
+            
+            if action == '0':
+                break
+            elif action.isdigit() and 1 <= int(action) <= len(products):
+                self.edit_product_menu(products[int(action) - 1], seller_id)
+            else:
+                print(t('common.invalid_choice'))
+    
+    def edit_product_menu(self, product_data: dict, seller_id: int):
+        """编辑商品菜单"""
+        while True:
+            print(f"\n{'='*50}")
+            print(f"{t('product.detail')} - {t('product.id')}: {product_data['product_id']}")
+            print(f"{'='*50}")
+            print(f"{t('product.preview_title')}: {product_data['title']}")
+            print(f"{t('product.preview_description')}: {product_data['description']}")
+            print(f"{t('product.price')}: ¥{product_data['price']:.2f}")
+            print(f"{t('product.category')}: {product_data['category']}")
+            print(f"{t('product.stock')}: {product_data['stock']}")
+            print(f"{t('product.status')}: {product_data['status']}")
+            print(f"{t('product.views')}: {product_data['view_count']}")
+            print(f"{t('product.favorites')}: {product_data['favorite_count']}")
+            print(f"{t('product.created_at')}: {product_data['created_at']}")
+            print(f"{'='*50}")
+            print(f"1. {t('product.menu_edit_title')}")
+            print(f"2. {t('product.menu_edit_description')}")
+            print(f"3. {t('product.menu_edit_price')}")
+            print(f"4. {t('product.menu_edit_category')}")
+            print(f"5. {t('product.menu_edit_stock')}")
+            print(f"6. {t('product.remove_product') if product_data['status'] == 'available' else t('product.relist_product')}")
+            print(f"0. {t('common.back')}")
+            
+            choice = input(f"\n{t('common.please_select')}: ").strip()
+            
+            if choice == '0':
+                break
+            elif choice == '1':
+                new_title = input(t('product.new_title_prompt', current=product_data['title'])).strip()
+                if new_title:
+                    if self.product_service.update_product(product_data['product_id'], {'title': new_title}):
+                        print(t('product.title_updated'))
+                        product_data['title'] = new_title
+                    else:
+                        print(t('product.update_failed'))
+            elif choice == '2':
+                new_desc = input(t('product.new_description_prompt', current=product_data['description'])).strip()
+                if new_desc:
+                    if self.product_service.update_product(product_data['product_id'], {'description': new_desc}):
+                        print(t('product.description_updated'))
+                        product_data['description'] = new_desc
+                    else:
+                        print(t('product.update_failed'))
+            elif choice == '3':
+                try:
+                    new_price = float(input(t('product.new_price_prompt', current=f"{product_data['price']:.2f}")).strip())
+                    if new_price > 0:
+                        if self.product_service.update_product(product_data['product_id'], {'price': new_price}):
+                            print(t('product.price_updated'))
+                            product_data['price'] = new_price
+                        else:
+                            print(t('product.update_failed'))
+                    else:
+                        print(t('product.price_must_positive'))
+                except ValueError:
+                    print(t('product.price_invalid_format'))
+            elif choice == '4':
+                print(f"\n{t('product.select_category')}:")
+                for i, category in enumerate(PRODUCT_CATEGORIES, 1):
+                    print(f"{i}. {category}")
+                try:
+                    cat_choice = int(input(f"\n{t('common.please_select')}: ").strip())
+                    if 1 <= cat_choice <= len(PRODUCT_CATEGORIES):
+                        new_category = PRODUCT_CATEGORIES[cat_choice - 1]
+                        if self.product_service.update_product(product_data['product_id'], {'category': new_category}):
+                            print(t('product.category_updated'))
+                            product_data['category'] = new_category
+                        else:
+                            print(t('product.update_failed'))
+                    else:
+                        print(t('common.invalid_choice'))
+                except ValueError:
+                    print(t('product.input_invalid_format'))
+            elif choice == '5':
+                try:
+                    new_stock = int(input(t('product.new_stock_prompt', current=product_data['stock'])).strip())
+                    if new_stock >= 0:
+                        if self.product_service.update_product(product_data['product_id'], {'stock': new_stock}):
+                            print(t('product.stock_updated'))
+                            product_data['stock'] = new_stock
+                        else:
+                            print(t('product.update_failed'))
+                    else:
+                        print(t('product.stock_negative'))
+                except ValueError:
+                    print(t('product.stock_invalid_format'))
+            elif choice == '6':
+                if product_data['status'] == 'available':
+                    # 下架商品
+                    confirm = input(t('product.confirm_remove')).strip().lower()
+                    if confirm == 'y':
+                        if self.product_service.delete_product(product_data['product_id'], seller_id):
+                            print(t('product.remove_success'))
+                            product_data['status'] = 'removed'
+                        else:
+                            print(t('product.remove_failed'))
+                else:
+                    # 重新上架
+                    confirm = input(t('product.confirm_relist')).strip().lower()
+                    if confirm == 'y':
+                        if self.product_service.update_product(product_data['product_id'], {'status': 'available'}):
+                            print(t('product.relist_success'))
+                            product_data['status'] = 'available'
+                        else:
+                            print(t('product.relist_failed'))
+            else:
+                print(t('common.invalid_choice'))
     
     def report_menu(self):
         """举报功能菜单"""

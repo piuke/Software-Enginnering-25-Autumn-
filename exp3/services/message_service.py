@@ -5,6 +5,11 @@ Message Service - 消息服务层
 
 from typing import Optional, List, Dict
 from models.message import Message, MessageType
+from utils.exceptions import UserNotFoundError, PermissionDeniedError
+from config.settings import MESSAGE_CONFIG
+from config.i18n import t
+from utils.helpers import Helper
+from datetime import datetime
 
 
 class MessageService:
@@ -36,11 +41,41 @@ class MessageService:
         Returns:
             Optional[int]: 成功返回消息ID,失败返回None
         """
-        # TODO: 实现发送消息逻辑
         # 1. 验证用户是否存在
-        # 2. 创建消息对象
+        users = self.db.execute_query(
+            "SELECT user_id FROM users WHERE user_id IN (?, ?)",
+            (sender_id, receiver_id)
+        )
+        if len(users) != 2:
+            # 判断哪个用户不存在
+            existing_ids = {u['user_id'] for u in users}
+            if sender_id not in existing_ids:
+                raise UserNotFoundError(str(sender_id))
+            if receiver_id not in existing_ids:
+                raise UserNotFoundError(str(receiver_id))
+            return None
+
+        # 2. 校验消息类型与内容长度
+        supported = set(MESSAGE_CONFIG.get('supported_types', ['text']))
+        if msg_type not in supported:
+            raise ValueError(t('message.unsupported_type', type=msg_type))
+
+        max_len = int(MESSAGE_CONFIG.get('max_content_length', 1000))
+        if content is None:
+            content = ''
+        content = content.strip()
+        if not content:
+            raise ValueError(t('message.empty_content'))
+        if len(content) > max_len:
+            raise ValueError(t('message.too_long', max=max_len))
+
         # 3. 保存到数据库
-        pass
+        query = (
+            "INSERT INTO messages (sender_id, receiver_id, content, msg_type, status) "
+            "VALUES (?, ?, ?, ?, 'sent')"
+        )
+        msg_id = self.db.execute_insert(query, (sender_id, receiver_id, content, msg_type))
+        return msg_id
     
     def get_message_by_id(self, msg_id: int) -> Optional[Message]:
         """
@@ -52,8 +87,36 @@ class MessageService:
         Returns:
             Optional[Message]: 消息对象
         """
-        # TODO: 实现获取消息逻辑
-        pass
+        rows = self.db.execute_query(
+            "SELECT * FROM messages WHERE msg_id = ?",
+            (msg_id,)
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        msg = Message(row['sender_id'], row['receiver_id'], row['content'], row['msg_type'])
+        msg.msg_id = row['msg_id']
+        # created_at 格式化
+        created = row.get('created_at')
+        if isinstance(created, str):
+            try:
+                msg.created_at = Helper.parse_datetime(created)
+            except Exception:
+                pass
+        # 状态
+        try:
+            from models.message import MessageStatus
+            msg.status = MessageStatus(row['status'])
+        except Exception:
+            pass
+        # read_at
+        read_at = row.get('read_at')
+        if read_at:
+            try:
+                msg.read_at = Helper.parse_datetime(read_at) if isinstance(read_at, str) else read_at
+            except Exception:
+                pass
+        return msg
     
     def get_conversation(self, user_id1: int, user_id2: int,
                         limit: int = 50, offset: int = 0) -> List[Dict]:
@@ -69,8 +132,13 @@ class MessageService:
         Returns:
             List[Dict]: 消息列表
         """
-        # TODO: 实现获取对话记录逻辑
-        pass
+        query = (
+            "SELECT * FROM messages "
+            "WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?) "
+            "ORDER BY created_at ASC LIMIT ? OFFSET ?"
+        )
+        rows = self.db.execute_query(query, (user_id1, user_id2, user_id2, user_id1, limit, offset))
+        return rows
     
     def get_user_messages(self, user_id: int, limit: int = 20) -> List[Dict]:
         """
@@ -83,8 +151,21 @@ class MessageService:
         Returns:
             List[Dict]: 消息列表
         """
-        # TODO: 实现获取用户消息逻辑
-        pass
+        # 拉取用户相关的较多消息后在内存中按对方用户聚合，取每个会话的最新一条
+        rows = self.db.execute_query(
+            "SELECT * FROM messages WHERE sender_id=? OR receiver_id=? ORDER BY created_at DESC LIMIT 1000",
+            (user_id, user_id)
+        )
+        latest_by_peer: Dict[int, Dict] = {}
+        for row in rows:
+            peer = row['receiver_id'] if row['sender_id'] == user_id else row['sender_id']
+            if peer not in latest_by_peer:
+                latest_by_peer[peer] = row
+            if len(latest_by_peer) >= limit:
+                break
+        # 返回按时间降序
+        result = sorted(latest_by_peer.values(), key=lambda r: r['created_at'], reverse=True)
+        return result[:limit]
     
     def mark_as_read(self, msg_id: int, user_id: int) -> bool:
         """
@@ -97,8 +178,12 @@ class MessageService:
         Returns:
             bool: 标记是否成功
         """
-        # TODO: 实现标记已读逻辑
-        pass
+        # 只允许接收者标记为已读
+        affected = self.db.execute_update(
+            "UPDATE messages SET status='read', read_at=CURRENT_TIMESTAMP WHERE msg_id=? AND receiver_id=?",
+            (msg_id, user_id)
+        )
+        return affected > 0
     
     def mark_conversation_as_read(self, user_id: int, 
                                   other_user_id: int) -> bool:
@@ -112,8 +197,12 @@ class MessageService:
         Returns:
             bool: 标记是否成功
         """
-        # TODO: 实现标记对话已读逻辑
-        pass
+        affected = self.db.execute_update(
+            "UPDATE messages SET status='read', read_at=CURRENT_TIMESTAMP "
+            "WHERE receiver_id=? AND sender_id=? AND status <> 'read'",
+            (user_id, other_user_id)
+        )
+        return affected > 0
     
     def delete_message(self, msg_id: int, user_id: int) -> bool:
         """
@@ -126,8 +215,12 @@ class MessageService:
         Returns:
             bool: 删除是否成功
         """
-        # TODO: 实现删除消息逻辑
-        pass
+        # 允许发送者或接收者删除
+        affected = self.db.execute_delete(
+            "DELETE FROM messages WHERE msg_id=? AND (sender_id=? OR receiver_id=?)",
+            (msg_id, user_id, user_id)
+        )
+        return affected > 0
     
     def get_unread_count(self, user_id: int) -> int:
         """
@@ -139,8 +232,11 @@ class MessageService:
         Returns:
             int: 未读消息数量
         """
-        # TODO: 实现获取未读消息数量逻辑
-        pass
+        rows = self.db.execute_query(
+            "SELECT COUNT(*) AS cnt FROM messages WHERE receiver_id=? AND status <> 'read'",
+            (user_id,)
+        )
+        return int(rows[0]['cnt']) if rows else 0
     
     def search_messages(self, user_id: int, keyword: str, 
                        limit: int = 20) -> List[Dict]:
@@ -155,5 +251,12 @@ class MessageService:
         Returns:
             List[Dict]: 消息列表
         """
-        # TODO: 实现搜索消息逻辑
-        pass
+        keyword = (keyword or '').strip()
+        if not keyword:
+            return []
+        rows = self.db.execute_query(
+            "SELECT * FROM messages WHERE (sender_id=? OR receiver_id=?) AND content LIKE ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, user_id, f"%{keyword}%", limit)
+        )
+        return rows
