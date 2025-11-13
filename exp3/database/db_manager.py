@@ -68,6 +68,9 @@ class DatabaseManager:
                     role TEXT DEFAULT 'user',
                     is_verified BOOLEAN DEFAULT 0,
                     profile TEXT,
+                    shop_name TEXT,
+                    rating REAL DEFAULT 5.0,
+                    total_sales INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -112,18 +115,6 @@ class DatabaseManager:
                         cursor.execute("UPDATE users SET password=? WHERE username=?", (new_hashed, 'superadmin'))
                         print("✓ 已将现有 superadmin 密码哈希化")
             
-            # 卖家表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS sellers (
-                    seller_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER UNIQUE NOT NULL,
-                    shop_name TEXT NOT NULL,
-                    rating REAL DEFAULT 5.0,
-                    total_sales INTEGER DEFAULT 0,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id)
-                )
-            ''')
-            
             # 商品表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS products (
@@ -141,7 +132,7 @@ class DatabaseManager:
                     favorite_count INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (seller_id) REFERENCES sellers(seller_id)
+                    FOREIGN KEY (seller_id) REFERENCES users(user_id)
                 )
             ''')
             
@@ -162,7 +153,7 @@ class DatabaseManager:
                     shipped_at TIMESTAMP,
                     completed_at TIMESTAMP,
                     FOREIGN KEY (buyer_id) REFERENCES users(user_id),
-                    FOREIGN KEY (seller_id) REFERENCES sellers(seller_id),
+                    FOREIGN KEY (seller_id) REFERENCES users(user_id),
                     FOREIGN KEY (product_id) REFERENCES products(product_id)
                 )
             ''')
@@ -181,7 +172,7 @@ class DatabaseManager:
                     end_time TIMESTAMP NOT NULL,
                     status TEXT DEFAULT 'active',
                     FOREIGN KEY (product_id) REFERENCES products(product_id),
-                    FOREIGN KEY (seller_id) REFERENCES sellers(seller_id),
+                    FOREIGN KEY (seller_id) REFERENCES users(user_id),
                     FOREIGN KEY (current_bidder_id) REFERENCES users(user_id)
                 )
             ''')

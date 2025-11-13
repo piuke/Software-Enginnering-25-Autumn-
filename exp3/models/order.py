@@ -15,6 +15,8 @@ class OrderStatus(Enum):
     SHIPPED = "shipped"          # 已发货
     COMPLETED = "completed"      # 已完成
     CANCELLED = "cancelled"      # 已取消
+    REFUND_REQUESTED = "refund_requested"  # 退款申请中
+    REFUND_REJECTED = "refund_rejected"    # 退款被拒绝
     REFUNDED = "refunded"        # 已退款
 
 

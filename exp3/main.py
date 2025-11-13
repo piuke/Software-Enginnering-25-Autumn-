@@ -12,7 +12,7 @@ from services import (
     UserService, ProductService, OrderService,
     AuctionService, MessageService, ReportService
 )
-from models import User, Seller, Product, Order, Auction, Message, Report, Admin
+from models import User, Product, Order, Auction, Message, Report, Admin
 from utils import Validator, Helper
 from config import SYSTEM_CONFIG, PRODUCT_CATEGORIES
 from config.i18n import get_i18n, t, set_language
@@ -369,7 +369,7 @@ class AnimeShoppingMall:
             
             # 显示卖家信息
             seller_info = self.db_manager.execute_query(
-                "SELECT s.shop_name, u.username FROM sellers s JOIN users u ON s.user_id = u.user_id WHERE s.seller_id = ?",
+                "SELECT shop_name, username FROM users WHERE user_id = ?",
                 (product.seller_id,)
             )
             if seller_info:
@@ -390,21 +390,16 @@ class AnimeShoppingMall:
                     else:
                         print(t('favorite.already_added'))
                 elif action == '2':
-                    print(t('system.feature_not_implemented'))
+                    self._buy_now_flow(product.product_id, product)
                 elif action == '3':
-                    # 联系卖家
-                    seller_user = self.db_manager.execute_query(
-                        "SELECT user_id FROM sellers WHERE seller_id = ?",
-                        (product.seller_id,)
-                    )
-                    if seller_user:
-                        seller_user_id = seller_user[0]['user_id']
-                        # 防止自己联系自己
-                        if seller_user_id == self.current_user['user_id']:
-                            print(t('common.cannot_message_self'))
-                        else:
-                            # 直接打开与卖家的会话
-                            self._conversation_menu(self.current_user['user_id'], seller_user_id)
+                    # 联系卖家（seller_id 现在就是 user_id）
+                    seller_user_id = product.seller_id
+                    # 防止自己联系自己
+                    if seller_user_id == self.current_user['user_id']:
+                        print(t('common.cannot_message_self'))
+                    else:
+                        # 直接打开与卖家的会话
+                        self._conversation_menu(self.current_user['user_id'], seller_user_id)
             else:
                 input(f"\n{t('common.press_enter')}")
                 
@@ -637,16 +632,178 @@ class AnimeShoppingMall:
                     else:
                         print(t('favorite.already_added'))
             elif action == '2':
-                print(t('system.feature_not_implemented'))
+                self._buy_now_flow(product.product_id, product)
                 
         except Exception as e:
             print(f"{t('common.error')}: {str(e)}")
     
     def orders_menu(self):
         """订单菜单"""
-        print(f"\n--- {t('order.my_orders')} ---")
-        # TODO: 实现订单功能
-        print(t('system.feature_not_implemented'))
+        if not self.current_user:
+            print(t('user.please_login'))
+            return
+        user_id = self.current_user['user_id']
+        while True:
+            print(f"\n{'='*50}")
+            print(f"--- {t('order.my_orders')} ---")
+            print(f"{'='*50}")
+            print(f"1. {t('order.orders')}")
+            print(f"2. {t('order.statistics')}")
+            print(f"0. {t('common.back')}")
+
+            choice = input(f"\n{t('common.please_select')}: ").strip()
+            if choice == '0':
+                break
+            elif choice == '1':
+                self._buyer_orders_list(user_id)
+            elif choice == '2':
+                stats = self.order_service.get_order_statistics(user_id, is_seller=False)
+                print(f"\n{t('order.statistics')}: ")
+                print(f"- {t('common.total')}: {stats.get('total_orders',0)}")
+                by_status = stats.get('by_status', {})
+                for k, v in by_status.items():
+                    print(f"  · {self._display_order_status(k)}: {v}")
+                print(f"- total_spent: {stats.get('total_spent', 0):.2f}")
+                input(f"\n{t('common.press_enter')}")
+            else:
+                print(t('common.invalid_choice'))
+
+    def _display_order_status(self, status: str) -> str:
+        mapping = {
+            'pending': t('order.status_pending'),
+            'paid': t('order.status_paid'),
+            'shipped': t('order.status_shipped'),
+            'completed': t('order.status_completed'),
+            'cancelled': t('order.status_cancelled'),
+            'refunded': t('order.status_refunded'),
+            'refund_requested': t('order.status_refund_requested'),
+            'refund_rejected': t('order.status_refund_rejected'),
+        }
+        return mapping.get(status, status)
+
+    def _buyer_orders_list(self, buyer_id: int):
+        rows = self.order_service.get_orders_by_buyer(buyer_id)
+        if not rows:
+            print(t('order.no_orders'))
+            return
+        while True:
+            print(f"\n{'='*50}")
+            print(f"{t('order.orders')}")
+            print(f"{'='*50}")
+            for i, o in enumerate(rows, 1):
+                print(f"{i}. [#{o['order_id']}] P#{o['product_id']} x{o['quantity']}  ¥{o['total_price']:.2f}  {self._display_order_status(o['status'])}")
+                print(f"   {o.get('created_at','')}")
+            print(f"\n1-{len(rows)}: {t('common.view_details')}")
+            print(f"0. {t('common.back')}")
+            sel = input(f"\n{t('common.please_select')}: ").strip()
+            if sel == '0':
+                break
+            if sel.isdigit() and 1 <= int(sel) <= len(rows):
+                self._buyer_order_detail(rows[int(sel)-1], buyer_id)
+                # 刷新
+                rows = self.order_service.get_orders_by_buyer(buyer_id)
+            else:
+                print(t('common.invalid_choice'))
+
+    def _buyer_order_detail(self, order_row: dict, buyer_id: int):
+        o = order_row
+        print(f"\n{'='*50}")
+        print(f"{t('order.order')} #{o['order_id']}")
+        print(f"{'='*50}")
+        print(f"Product: #{o['product_id']}  x{o['quantity']}  ¥{o['total_price']:.2f}")
+        print(f"{t('order.order_status')}: {self._display_order_status(o['status'])}")
+        print(f"{t('product.created_at')}: {o.get('created_at','')}")
+        # 动态操作
+        actions = []
+        if o['status'] == 'pending':
+            actions = [('1', t('order.action_pay')), ('2', t('order.action_cancel'))]
+        elif o['status'] == 'paid':
+            actions = [('1', t('order.action_cancel')), ('2', t('order.action_request_refund'))]
+        elif o['status'] == 'shipped':
+            actions = [('1', t('order.action_confirm_receipt')), ('2', t('order.action_cancel'))]
+        elif o['status'] == 'completed':
+            actions = [('1', t('order.action_request_refund'))]
+        elif o['status'] == 'refund_requested':
+            actions = []  # 等待卖家审批
+        else:
+            actions = []
+        for key, label in actions:
+            print(f"{key}. {label}")
+        # 新增：联系卖家
+        print(f"C. 💬 {t('message.contact_seller')}")
+        print(f"0. {t('common.back')}")
+        act = input(f"\n{t('common.please_select')}: ").strip().upper()
+        if act == '0':
+            return
+        if act == 'C':
+            # 联系卖家（seller_id 现在就是 user_id）
+            seller_user_id = o['seller_id']
+            self._conversation_menu(buyer_id, seller_user_id)
+            return
+        try:
+            if o['status'] == 'pending' and act == '1':
+                ok = self.order_service.pay_order(o['order_id'], 'confirm')
+                print(t('order.pay_success') if ok else t('order.pay_failed'))
+            elif o['status'] == 'pending' and act == '2':
+                ok = self.order_service.cancel_order(o['order_id'], buyer_id, reason='buyer_cancel')
+                print(t('common.success') if ok else t('common.failed'))
+            elif o['status'] == 'paid' and act == '1':
+                ok = self.order_service.cancel_order(o['order_id'], buyer_id, reason='buyer_cancel')
+                print(t('common.success') if ok else t('common.failed'))
+            elif o['status'] == 'paid' and act == '2':
+                ok = self.order_service.request_refund(o['order_id'], buyer_id, reason='buyer_refund')
+                print(t('common.success') if ok else t('common.failed'))
+            elif o['status'] == 'shipped' and act == '1':
+                ok = self.order_service.confirm_receipt(o['order_id'], buyer_id)
+                print(t('common.success') if ok else t('common.failed'))
+            elif o['status'] == 'shipped' and act == '2':
+                ok = self.order_service.cancel_order(o['order_id'], buyer_id, reason='buyer_cancel_after_ship')
+                print(t('common.success') if ok else t('common.failed'))
+            elif o['status'] == 'completed' and act == '1':
+                ok = self.order_service.request_refund(o['order_id'], buyer_id, reason='buyer_refund_after_complete')
+                print(t('common.success') if ok else t('common.failed'))
+            else:
+                print(t('common.invalid_choice'))
+        except Exception as e:
+            print(f"{t('common.error')}: {str(e)}")
+
+    def _buy_now_flow(self, product_id: int, product=None):
+        if not self.current_user:
+            print(t('user.please_login'))
+            return
+        # 尝试获取商品（若未提供）
+        if product is None:
+            product = self.product_service.get_product_by_id(product_id)
+            if not product:
+                print(t('product.not_found'))
+                return
+        try:
+            qty_input = input(f"{t('order.quantity')}: ").strip()
+            quantity = int(qty_input or '1')
+            if quantity <= 0:
+                print(t('product.stock_invalid_format'))
+                return
+        except ValueError:
+            print(t('product.stock_invalid_format'))
+            return
+        address = input(f"{t('order.shipping_address')}: ").strip()
+        if not address:
+            print(t('common.cancelled'))
+            return
+        order_id = self.order_service.create_order(
+            buyer_id=self.current_user['user_id'],
+            product_id=product_id,
+            quantity=quantity,
+            shipping_address=address
+        )
+        if order_id:
+            print(t('order.create_success_brief', order_id=order_id))
+            pay_now = input(t('order.pay_now')).strip().lower()
+            if pay_now == 'y':
+                ok = self.order_service.pay_order(order_id, 'confirm')
+                print(t('order.pay_success') if ok else t('order.pay_failed'))
+        else:
+            print(t('order.create_failed'))
     
     def messages_menu(self):
         """消息菜单 - Telegram风格联系人列表"""
@@ -697,7 +854,7 @@ class AnimeShoppingMall:
             
             # 检查是否是卖家
             seller_info = self.db_manager.execute_query(
-                "SELECT shop_name FROM sellers WHERE user_id = ?",
+                "SELECT shop_name FROM users WHERE user_id = ?",
                 (peer_id,)
             )
             is_seller = len(seller_info) > 0
@@ -738,7 +895,7 @@ class AnimeShoppingMall:
                         peer_name = peer['username']
                         unread_from_peer = self._get_unread_from_peer(user_id, peer_id)
                         seller_info = self.db_manager.execute_query(
-                            "SELECT shop_name FROM sellers WHERE user_id = ?", (peer_id,)
+                            "SELECT shop_name FROM users WHERE user_id = ?", (peer_id,)
                         )
                         is_seller = len(seller_info) > 0
                         shop_name = seller_info[0]['shop_name'] if is_seller else None
@@ -794,7 +951,7 @@ class AnimeShoppingMall:
                     peer_name = peer['username']
                     unread_from_peer = self._get_unread_from_peer(user_id, peer_id)
                     seller_info = self.db_manager.execute_query(
-                        "SELECT shop_name FROM sellers WHERE user_id = ?", (peer_id,)
+                        "SELECT shop_name FROM users WHERE user_id = ?", (peer_id,)
                     )
                     is_seller = len(seller_info) > 0
                     shop_name = seller_info[0]['shop_name'] if is_seller else None
@@ -834,7 +991,7 @@ class AnimeShoppingMall:
         for i, user in enumerate(users, 1):
             # 检查是否是卖家
             seller_info = self.db_manager.execute_query(
-                "SELECT shop_name FROM sellers WHERE user_id = ?",
+                "SELECT shop_name FROM users WHERE user_id = ?",
                 (user['user_id'],)
             )
             seller_badge = f" [🏪{seller_info[0]['shop_name']}]" if seller_info else ""
@@ -860,7 +1017,7 @@ class AnimeShoppingMall:
         
         # 检查是否是卖家
         seller_info = self.db_manager.execute_query(
-            "SELECT shop_name FROM sellers WHERE user_id = ?",
+            "SELECT shop_name FROM users WHERE user_id = ?",
             (other_user_id,)
         )
         shop_display = f" [🏪{seller_info[0]['shop_name']}]" if seller_info else ""
@@ -981,22 +1138,15 @@ class AnimeShoppingMall:
             return
         
         # 检查当前用户是否是卖家
-        seller_info = self.db_manager.execute_query(
-            "SELECT seller_id, shop_name FROM sellers WHERE user_id = ?",
-            (self.current_user['user_id'],)
-        )
-        
-        if not seller_info:
+        if self.current_user.get('role') != 'seller':
             print(f"\n{t('seller.not_seller_error')}")
             print(t('seller.not_seller_hint'))
             return
         
-        seller = seller_info[0]
-        
         while True:
             print(f"\n{'='*50}")
             print(f"--- {t('seller.seller_functions')} ---")
-            print(f"{t('seller.shop_label')}: {seller['shop_name']}")
+            print(f"{t('seller.shop_label')}: {self.current_user.get('shop_name', 'N/A')}")
             print(f"{'='*50}")
             print(f"1. {t('product.add_product')}")
             print(f"2. {t('seller.manage_products')}")
@@ -1009,15 +1159,81 @@ class AnimeShoppingMall:
             if choice == '0':
                 break
             elif choice == '1':
-                self.add_product_menu(seller['seller_id'])
+                self.add_product_menu(self.current_user['user_id'])
             elif choice == '2':
-                self.manage_products_menu(seller['seller_id'])
+                self.manage_products_menu(self.current_user['user_id'])
             elif choice == '3':
                 print(t('system.feature_not_implemented'))
             elif choice == '4':
-                print(t('system.feature_not_implemented'))
+                self.manage_orders_menu(self.current_user['user_id'])
             else:
                 print(t('common.invalid_choice'))
+
+    def manage_orders_menu(self, seller_id: int):
+        while True:
+            rows = self.order_service.get_orders_by_seller(seller_id)
+            print(f"\n{'='*50}")
+            print(f"--- {t('seller.manage_orders')} ---")
+            print(f"{'='*50}")
+            if not rows:
+                print(t('order.no_orders'))
+                print(f"0. {t('common.back')}")
+                if input(f"\n{t('common.please_select')}: ").strip() == '0':
+                    break
+                continue
+            for i, o in enumerate(rows, 1):
+                print(f"{i}. [#{o['order_id']}] Buyer#{o['buyer_id']} P#{o['product_id']} x{o['quantity']}  ¥{o['total_price']:.2f}  {self._display_order_status(o['status'])}")
+                print(f"   {o.get('created_at','')}")
+            print(f"\n1-{len(rows)}: {t('common.view_details')}")
+            print(f"0. {t('common.back')}")
+            sel = input(f"\n{t('common.please_select')}: ").strip()
+            if sel == '0':
+                break
+            if sel.isdigit() and 1 <= int(sel) <= len(rows):
+                self._seller_order_detail(rows[int(sel)-1], seller_id)
+            else:
+                print(t('common.invalid_choice'))
+
+    def _seller_order_detail(self, order_row: dict, seller_id: int):
+        o = order_row
+        print(f"\n{'='*50}")
+        print(f"{t('order.order')} #{o['order_id']}")
+        print(f"{'='*50}")
+        print(f"Buyer: #{o['buyer_id']}  Product: #{o['product_id']}  x{o['quantity']}  ¥{o['total_price']:.2f}")
+        print(f"{t('order.order_status')}: {self._display_order_status(o['status'])}")
+        print(f"{t('product.created_at')}: {o.get('created_at','')}")
+        actions = []
+        if o['status'] == 'paid':
+            actions = [('1', t('order.action_ship'))]
+        elif o['status'] == 'refund_requested':
+            actions = [('1', t('order.action_approve_refund')), ('2', t('order.action_reject_refund'))]
+        elif o['status'] == 'shipped':
+            actions = []
+        print("\n".join([f"{k}. {label}" for k, label in actions]))
+        # 新增：联系买家
+        print(f"C. 💬 {t('message.contact_buyer')}")
+        print(f"0. {t('common.back')}")
+        act = input(f"\n{t('common.please_select')}: ").strip().upper()
+        if act == '0':
+            return
+        if act == 'C':
+            # 联系买家
+            self._conversation_menu(self.current_user['user_id'], o['buyer_id'])
+            return
+        if o['status'] == 'paid' and act == '1':
+            tn = input(f"{t('order.enter_tracking_number')}: ").strip()
+            if not tn:
+                print(t('common.cancelled'))
+                return
+            ok = self.order_service.ship_order(o['order_id'], seller_id, tn)
+            print(t('common.success') if ok else t('common.failed'))
+        elif o['status'] == 'refund_requested' and act == '1':
+            ok = self.order_service.approve_refund(o['order_id'], seller_id)
+            print(t('common.success') if ok else t('common.failed'))
+        elif o['status'] == 'refund_requested' and act == '2':
+            reason = input(f"{t('order.enter_reject_reason')} ").strip()
+            ok = self.order_service.reject_refund(o['order_id'], seller_id, reason)
+            print(t('common.success') if ok else t('common.failed'))
     
     def add_product_menu(self, seller_id: int):
         """添加商品菜单"""

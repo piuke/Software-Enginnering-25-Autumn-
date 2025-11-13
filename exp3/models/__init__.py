@@ -4,7 +4,6 @@ Models package for the Anime Shopping Mall System.
 """
 
 from .user import User
-from .seller import Seller
 from .product import Product
 from .order import Order
 from .auction import Auction
@@ -14,7 +13,6 @@ from .admin import Admin
 
 __all__ = [
     'User',
-    'Seller',
     'Product',
     'Order',
     'Auction',

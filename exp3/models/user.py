@@ -11,6 +11,7 @@ from enum import Enum
 class UserRole(Enum):
     """用户角色枚举"""
     USER = "user"              # 普通用户
+    SELLER = "seller"          # 卖家
     ADMIN = "admin"            # 管理员
     SUPERADMIN = "superadmin"  # 超级管理员
 
@@ -27,6 +28,9 @@ class User:
         role (UserRole): 用户角色
         is_verified (bool): 是否已实名认证
         profile (dict): 用户资料(兴趣、社交属性等)
+        shop_name (str): 店铺名称（仅卖家）
+        rating (float): 店铺评分（仅卖家）
+        total_sales (int): 总销售额（仅卖家）
         following (List[int]): 关注的用户ID列表
         followers (List[int]): 粉丝的用户ID列表
         created_at (datetime): 创建时间
@@ -40,7 +44,7 @@ class User:
             username: 用户名
             password: 密码
             email: 邮箱
-            role: 用户角色 (user/admin/superadmin)
+            role: 用户角色 (user/seller/admin/superadmin)
         """
         self.user_id: Optional[int] = None
         self.username: str = username
@@ -49,6 +53,9 @@ class User:
         self.role: str = role
         self.is_verified: bool = False
         self.profile: dict = {}
+        self.shop_name: Optional[str] = None
+        self.rating: float = 5.0
+        self.total_sales: int = 0
         self.following: List[int] = []
         self.followers: List[int] = []
         self.created_at: datetime = datetime.now()
@@ -62,6 +69,15 @@ class User:
             bool: 是否是管理员或超级管理员
         """
         return self.role in ['admin', 'superadmin']
+    
+    def is_seller(self) -> bool:
+        """
+        检查是否是卖家
+        
+        Returns:
+            bool: 是否是卖家
+        """
+        return self.role == 'seller'
     
     def is_superadmin(self) -> bool:
         """

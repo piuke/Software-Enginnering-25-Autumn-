@@ -5,7 +5,6 @@ User Service - 用户服务层
 
 from typing import Optional, List, Dict
 from models.user import User
-from models.seller import Seller
 from utils.exceptions import (
     InvalidUsernameError,
     InvalidEmailError,
@@ -78,15 +77,18 @@ class UserService:
         
         # encrypt password
         pwd = Helper.hash_password(password)
-        user_id = self.db.execute_insert(
-            "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
-            (username, email, pwd)
-        )
-
+        
+        # 设置用户角色和店铺信息
+        role = 'seller' if is_seller else 'user'
         if is_seller and shop_name:
-            self.db.execute_insert(
-                "INSERT INTO sellers (user_id, shop_name) VALUES (?, ?)",
-                (user_id, shop_name)
+            user_id = self.db.execute_insert(
+                "INSERT INTO users (username, email, password, role, shop_name) VALUES (?, ?, ?, ?, ?)",
+                (username, email, pwd, role, shop_name)
+            )
+        else:
+            user_id = self.db.execute_insert(
+                "INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, ?)",
+                (username, email, pwd, role)
             )
 
         return user_id
