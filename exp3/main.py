@@ -7,6 +7,7 @@ Anime Shopping Mall System - Main Entry Point
 """
 
 import sys
+import json
 from database import DatabaseManager
 from services import (
     UserService, ProductService, OrderService,
@@ -678,6 +679,8 @@ class AnimeShoppingMall:
             'refunded': t('order.status_refunded'),
             'refund_requested': t('order.status_refund_requested'),
             'refund_rejected': t('order.status_refund_rejected'),
+            'cancel_requested': t('order.status_cancel_requested'),
+            'cancel_rejected': t('order.status_cancel_rejected'),
         }
         return mapping.get(status, status)
 
@@ -713,6 +716,15 @@ class AnimeShoppingMall:
         print(f"Product: #{o['product_id']}  x{o['quantity']}  ¥{o['total_price']:.2f}")
         print(f"{t('order.order_status')}: {self._display_order_status(o['status'])}")
         print(f"{t('product.created_at')}: {o.get('created_at','')}")
+        
+        # 如果订单状态是退款被拒绝，显示拒绝原因
+        if o['status'] == 'refund_rejected' and o.get('refund_reject_reason'):
+            print(f"🚫 {t('order.refund_reject_reason')}: {o['refund_reject_reason']}")
+        
+        # 如果订单状态是取消被拒绝，显示拒绝原因
+        if o['status'] == 'cancel_rejected' and o.get('cancel_reject_reason'):
+            print(f"🚫 {t('order.cancel_reject_reason_label')}: {o['cancel_reject_reason']}")
+        
         # 动态操作
         actions = []
         if o['status'] == 'pending':
@@ -724,7 +736,9 @@ class AnimeShoppingMall:
         elif o['status'] == 'completed':
             actions = [('1', t('order.action_request_refund'))]
         elif o['status'] == 'refund_requested':
-            actions = []  # 等待卖家审批
+            actions = []  # 等待卖家审批退款
+        elif o['status'] == 'cancel_requested':
+            actions = []  # 等待卖家审批取消
         else:
             actions = []
         for key, label in actions:
@@ -745,22 +759,27 @@ class AnimeShoppingMall:
                 ok = self.order_service.pay_order(o['order_id'], 'confirm')
                 print(t('order.pay_success') if ok else t('order.pay_failed'))
             elif o['status'] == 'pending' and act == '2':
-                ok = self.order_service.cancel_order(o['order_id'], buyer_id, reason='buyer_cancel')
+                reason = input(f"{t('order.cancel_reason_label')}: ").strip()
+                ok = self.order_service.request_cancel_order(o['order_id'], buyer_id, reason or 'buyer_cancel')
                 print(t('common.success') if ok else t('common.failed'))
             elif o['status'] == 'paid' and act == '1':
-                ok = self.order_service.cancel_order(o['order_id'], buyer_id, reason='buyer_cancel')
+                reason = input(f"{t('order.cancel_reason_label')}: ").strip()
+                ok = self.order_service.request_cancel_order(o['order_id'], buyer_id, reason or 'buyer_cancel')
                 print(t('common.success') if ok else t('common.failed'))
             elif o['status'] == 'paid' and act == '2':
-                ok = self.order_service.request_refund(o['order_id'], buyer_id, reason='buyer_refund')
+                reason = input(f"{t('order.refund_reason_label')}: ").strip()
+                ok = self.order_service.request_refund(o['order_id'], buyer_id, reason or 'buyer_refund')
                 print(t('common.success') if ok else t('common.failed'))
             elif o['status'] == 'shipped' and act == '1':
                 ok = self.order_service.confirm_receipt(o['order_id'], buyer_id)
                 print(t('common.success') if ok else t('common.failed'))
             elif o['status'] == 'shipped' and act == '2':
-                ok = self.order_service.cancel_order(o['order_id'], buyer_id, reason='buyer_cancel_after_ship')
+                reason = input(f"{t('order.cancel_reason_label')}: ").strip()
+                ok = self.order_service.request_cancel_order(o['order_id'], buyer_id, reason or 'buyer_cancel_after_ship')
                 print(t('common.success') if ok else t('common.failed'))
             elif o['status'] == 'completed' and act == '1':
-                ok = self.order_service.request_refund(o['order_id'], buyer_id, reason='buyer_refund_after_complete')
+                reason = input(f"{t('order.refund_reason_label')}: ").strip()
+                ok = self.order_service.request_refund(o['order_id'], buyer_id, reason or 'buyer_refund_after_complete')
                 print(t('common.success') if ok else t('common.failed'))
             else:
                 print(t('common.invalid_choice'))
@@ -1039,7 +1058,24 @@ class AnimeShoppingMall:
                     status = r.get('status', '')
                     read_tag = '' if mine or status == 'read' else f"({t('message.unread_tag')})"
                     ts = r.get('created_at', '')
-                    print(f"{sender}: {r['content']}  {read_tag}  [{ts}]  ({t('message.message_id_label')}: {r['msg_id']})")
+                    
+                    # 处理服务消息的翻译
+                    msg_type = r.get('msg_type', 'text')
+                    if msg_type == 'service':
+                        try:
+                            # 解析 JSON 格式的服务消息
+                            msg_data = json.loads(r['content'])
+                            translation_key = msg_data.get('key', '')
+                            params = msg_data.get('params', {})
+                            # 使用翻译键和参数获取本地化消息
+                            content = t(translation_key, **params)
+                        except (json.JSONDecodeError, KeyError):
+                            # 如果解析失败,显示原始内容(兼容旧格式)
+                            content = r['content']
+                    else:
+                        content = r['content']
+                    
+                    print(f"{sender}: {content}  {read_tag}  [{ts}]  ({t('message.message_id_label')}: {r['msg_id']})")
 
             print(f"\n1. {t('message.send_message')}")
             print(f"2. {t('message.delete_message')}")
@@ -1202,11 +1238,22 @@ class AnimeShoppingMall:
         print(f"Buyer: #{o['buyer_id']}  Product: #{o['product_id']}  x{o['quantity']}  ¥{o['total_price']:.2f}")
         print(f"{t('order.order_status')}: {self._display_order_status(o['status'])}")
         print(f"{t('product.created_at')}: {o.get('created_at','')}")
+        
+        # 如果订单状态是退款被拒绝，显示拒绝原因（卖家也能看到自己的拒绝理由）
+        if o['status'] == 'refund_rejected' and o.get('refund_reject_reason'):
+            print(f"🚫 {t('order.refund_reject_reason')}: {o['refund_reject_reason']}")
+        
+        # 如果订单状态是取消被拒绝，显示拒绝原因
+        if o['status'] == 'cancel_rejected' and o.get('cancel_reject_reason'):
+            print(f"🚫 {t('order.cancel_reject_reason_label')}: {o['cancel_reject_reason']}")
+        
         actions = []
         if o['status'] == 'paid':
             actions = [('1', t('order.action_ship'))]
         elif o['status'] == 'refund_requested':
             actions = [('1', t('order.action_approve_refund')), ('2', t('order.action_reject_refund'))]
+        elif o['status'] == 'cancel_requested':
+            actions = [('1', t('order.action_approve_cancel')), ('2', t('order.action_reject_cancel'))]
         elif o['status'] == 'shipped':
             actions = []
         print("\n".join([f"{k}. {label}" for k, label in actions]))
@@ -1233,6 +1280,13 @@ class AnimeShoppingMall:
         elif o['status'] == 'refund_requested' and act == '2':
             reason = input(f"{t('order.enter_reject_reason')} ").strip()
             ok = self.order_service.reject_refund(o['order_id'], seller_id, reason)
+            print(t('common.success') if ok else t('common.failed'))
+        elif o['status'] == 'cancel_requested' and act == '1':
+            ok = self.order_service.approve_cancel(o['order_id'], seller_id)
+            print(t('common.success') if ok else t('common.failed'))
+        elif o['status'] == 'cancel_requested' and act == '2':
+            reason = input(f"{t('order.enter_reject_reason')} ").strip()
+            ok = self.order_service.reject_cancel(o['order_id'], seller_id, reason)
             print(t('common.success') if ok else t('common.failed'))
     
     def add_product_menu(self, seller_id: int):

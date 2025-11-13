@@ -152,6 +152,8 @@ class DatabaseManager:
                     paid_at TIMESTAMP,
                     shipped_at TIMESTAMP,
                     completed_at TIMESTAMP,
+                    refund_reject_reason TEXT,
+                    cancel_reject_reason TEXT,
                     FOREIGN KEY (buyer_id) REFERENCES users(user_id),
                     FOREIGN KEY (seller_id) REFERENCES users(user_id),
                     FOREIGN KEY (product_id) REFERENCES products(product_id)
@@ -260,6 +262,13 @@ class DatabaseManager:
                     FOREIGN KEY (product_id) REFERENCES products(product_id)
                 )
             ''')
+            
+            # 数据库迁移：添加 cancel_reject_reason 字段（如果不存在）
+            cursor.execute("PRAGMA table_info(orders)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'cancel_reject_reason' not in columns:
+                cursor.execute("ALTER TABLE orders ADD COLUMN cancel_reject_reason TEXT")
+                print("✓ 已添加 cancel_reject_reason 字段到 orders 表")
     
     def execute_query(self, query: str, params: tuple = ()) -> List[Dict]:
         """

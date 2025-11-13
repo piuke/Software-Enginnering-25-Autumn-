@@ -15,6 +15,8 @@ class OrderStatus(Enum):
     SHIPPED = "shipped"          # 已发货
     COMPLETED = "completed"      # 已完成
     CANCELLED = "cancelled"      # 已取消
+    CANCEL_REQUESTED = "cancel_requested"  # 取消申请中
+    CANCEL_REJECTED = "cancel_rejected"    # 取消被拒绝
     REFUND_REQUESTED = "refund_requested"  # 退款申请中
     REFUND_REJECTED = "refund_rejected"    # 退款被拒绝
     REFUNDED = "refunded"        # 已退款
@@ -34,6 +36,7 @@ class Order:
         status (OrderStatus): 订单状态
         shipping_address (str): 收货地址
         tracking_number (str): 物流单号
+        refund_reject_reason (str): 拒绝退款原因
         created_at (datetime): 创建时间
         paid_at (datetime): 支付时间
         shipped_at (datetime): 发货时间
@@ -62,6 +65,8 @@ class Order:
         self.status: OrderStatus = OrderStatus.PENDING
         self.shipping_address: str = shipping_address
         self.tracking_number: Optional[str] = None
+        self.refund_reject_reason: Optional[str] = None
+        self.cancel_reject_reason: Optional[str] = None
         self.created_at: datetime = datetime.now()
         self.paid_at: Optional[datetime] = None
         self.shipped_at: Optional[datetime] = None

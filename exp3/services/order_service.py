@@ -64,7 +64,7 @@ class OrderService:
         new_status = 'sold_out' if new_stock == 0 else 'available'
         self.db.execute_update(product_update, (new_stock, new_status, product_id))
         # 5. 发送服务消息给卖家
-        self._send_service_message(buyer_id, seller_id, f"[service] 您有新订单 #{order_id}，买家已下单，等待支付。")
+        self._send_service_message(buyer_id, seller_id, 'order.service_order_created', order_id=order_id)
         return order_id
     
     def pay_order(self, order_id: int, payment_method: str) -> bool:
@@ -92,7 +92,7 @@ class OrderService:
         updated = self.db.execute_update(update_query, (OrderStatus.PAID.value, paid_at, order_id))
         if updated > 0:
             # 3. 发送服务消息给卖家
-            self._send_service_message(order['buyer_id'], order['seller_id'], f"[service] 订单 #{order_id} 已支付，请尽快发货。")
+            self._send_service_message(order['buyer_id'], order['seller_id'], 'order.service_order_paid', order_id=order_id)
         return updated > 0
     
     def ship_order(self, order_id: int, seller_id: int,
@@ -123,7 +123,8 @@ class OrderService:
         updated = self.db.execute_update(update_query, (OrderStatus.SHIPPED.value, tracking_number, shipped_at, order_id))
         if updated > 0:
             # 发送服务消息给买家
-            self._send_service_message(seller_id, order['buyer_id'], f"[service] 订单 #{order_id} 已发货，物流单号: {tracking_number}。")
+            self._send_service_message(seller_id, order['buyer_id'], 'order.service_order_shipped', 
+                                      order_id=order_id, tracking_number=tracking_number)
         return updated > 0
     
     def confirm_receipt(self, order_id: int, buyer_id: int) -> bool:
@@ -152,20 +153,20 @@ class OrderService:
         updated = self.db.execute_update(update_query, (OrderStatus.COMPLETED.value, completed_at, order_id))
         if updated > 0:
             # 发送服务消息给卖家
-            self._send_service_message(buyer_id, order['seller_id'], f"[service] 订单 #{order_id} 买家已确认收货，交易完成。")
+            self._send_service_message(buyer_id, order['seller_id'], 'order.service_order_completed', order_id=order_id)
         return updated > 0
     
-    def cancel_order(self, order_id: int, user_id: int, reason: str) -> bool:
+    def request_cancel_order(self, order_id: int, buyer_id: int, reason: str) -> bool:
         """
-        取消订单
+        买家申请取消订单（状态改为 cancel_requested，待卖家审批）
         
         Args:
             order_id: 订单ID
-            user_id: 用户ID(买家或卖家)
+            buyer_id: 买家ID
             reason: 取消原因
             
         Returns:
-            bool: 取消是否成功
+            bool: 申请是否成功
         """
         # 查询订单
         order_query = "SELECT * FROM orders WHERE order_id=?"
@@ -173,23 +174,95 @@ class OrderService:
         if not orders:
             return False
         order = orders[0]
-        # 仅待支付/已支付/已发货状态可取消
+        
+        # 权限校验：必须是买家
+        if order['buyer_id'] != buyer_id:
+            return False
+            
+        # 仅待支付/已支付/已发货状态可申请取消
         if order['status'] not in [OrderStatus.PENDING.value, OrderStatus.PAID.value, OrderStatus.SHIPPED.value]:
             return False
-        # 权限校验：买家或卖家
-        if user_id not in [order['buyer_id'], order['seller_id']]:
+        
+        # 状态改为 cancel_requested（待卖家审批）
+        update_query = "UPDATE orders SET status=? WHERE order_id=?"
+        updated = self.db.execute_update(update_query, (OrderStatus.CANCEL_REQUESTED.value, order_id))
+        
+        if updated > 0:
+            # 发送服务消息给卖家
+            self._send_service_message(buyer_id, order['seller_id'], 'order.service_cancel_requested', 
+                                     order_id=order_id, reason=reason)
+        return updated > 0
+    
+    def approve_cancel(self, order_id: int, seller_id: int) -> bool:
+        """
+        卖家同意取消订单（状态从 cancel_requested 改为 cancelled）
+        
+        Args:
+            order_id: 订单ID
+            seller_id: 卖家ID(验证权限)
+            
+        Returns:
+            bool: 审批是否成功
+        """
+        order_query = "SELECT * FROM orders WHERE order_id=?"
+        orders = self.db.execute_query(order_query, (order_id,))
+        if not orders:
             return False
+        order = orders[0]
+        if order['seller_id'] != seller_id:
+            return False  # 权限校验
+        if order['status'] != OrderStatus.CANCEL_REQUESTED.value:
+            return False  # 仅待审批状态可审批
+        
+        # 更新订单状态为已取消
         update_query = "UPDATE orders SET status=? WHERE order_id=?"
         updated = self.db.execute_update(update_query, (OrderStatus.CANCELLED.value, order_id))
-        # 可选：恢复商品库存（仅待支付时）
-        if order['status'] == OrderStatus.PENDING.value:
-            # 恢复库存
+        
+        if updated > 0:
+            # 恢复商品库存
             product_query = "SELECT stock FROM products WHERE product_id=?"
             products = self.db.execute_query(product_query, (order['product_id'],))
             if products:
                 new_stock = products[0]['stock'] + order['quantity']
                 product_update = "UPDATE products SET stock=?, status=? WHERE product_id=?"
                 self.db.execute_update(product_update, (new_stock, 'available', order['product_id']))
+            
+            # 发送服务消息给买家
+            self._send_service_message(seller_id, order['buyer_id'], 'order.service_cancel_approved', 
+                                     order_id=order_id)
+        return updated > 0
+    
+    def reject_cancel(self, order_id: int, seller_id: int, reason: str = "") -> bool:
+        """
+        卖家拒绝取消订单（状态从 cancel_requested 改为原状态或 cancel_rejected）
+        
+        Args:
+            order_id: 订单ID
+            seller_id: 卖家ID(验证权限)
+            reason: 拒绝原因
+        
+        Returns:
+            bool: 是否拒绝成功
+        """
+        order_query = "SELECT * FROM orders WHERE order_id=?"
+        orders = self.db.execute_query(order_query, (order_id,))
+        if not orders:
+            return False
+        order = orders[0]
+        if order['seller_id'] != seller_id:
+            return False  # 权限校验
+        if order['status'] != OrderStatus.CANCEL_REQUESTED.value:
+            return False  # 仅待审批状态可审批
+        
+        # 更新状态和拒绝原因
+        update_query = "UPDATE orders SET status=?, cancel_reject_reason=? WHERE order_id=?"
+        updated = self.db.execute_update(update_query, (OrderStatus.CANCEL_REJECTED.value, reason, order_id))
+        
+        if updated > 0:
+            # 发送服务消息给买家
+            reason_text = f" 原因: {reason}" if reason else ""
+            self._send_service_message(seller_id, order['buyer_id'], 'order.service_cancel_rejected', 
+                                     order_id=order_id, reason_text=reason_text)
         return updated > 0
     
     def request_refund(self, order_id: int, buyer_id: int, 
@@ -221,7 +294,7 @@ class OrderService:
         updated = self.db.execute_update(update_query, (OrderStatus.REFUND_REQUESTED.value, order_id))
         if updated > 0:
             # 发送服务消息给卖家
-            self._send_service_message(buyer_id, order['seller_id'], f"[service] 订单 #{order_id} 买家申请退款，原因: {reason}。请及时处理。")
+            self._send_service_message(buyer_id, order['seller_id'], 'order.service_refund_requested', order_id=order_id, reason=reason)
         return updated > 0
     
     def approve_refund(self, order_id: int, seller_id: int) -> bool:
@@ -248,7 +321,7 @@ class OrderService:
         updated = self.db.execute_update(update_query, (OrderStatus.REFUNDED.value, order_id))
         if updated > 0:
             # 发送服务消息给买家
-            self._send_service_message(seller_id, order['buyer_id'], f"[service] 订单 #{order_id} 卖家已同意退款，退款已处理。")
+            self._send_service_message(seller_id, order['buyer_id'], 'order.service_refund_approved', order_id=order_id)
         return updated > 0
     
     def reject_refund(self, order_id: int, seller_id: int, reason: str = "") -> bool:
@@ -272,28 +345,39 @@ class OrderService:
             return False  # 权限校验
         if order['status'] != OrderStatus.REFUND_REQUESTED.value:
             return False  # 仅待审批状态可审批
-        update_query = "UPDATE orders SET status=? WHERE order_id=?"
-        updated = self.db.execute_update(update_query, (OrderStatus.REFUND_REJECTED.value, order_id))
+        # 更新状态和拒绝原因
+        update_query = "UPDATE orders SET status=?, refund_reject_reason=? WHERE order_id=?"
+        updated = self.db.execute_update(update_query, (OrderStatus.REFUND_REJECTED.value, reason, order_id))
         if updated > 0:
             # 发送服务消息给买家
             reason_text = f" 原因: {reason}" if reason else ""
-            self._send_service_message(seller_id, order['buyer_id'], f"[service] 订单 #{order_id} 卖家已拒绝退款。{reason_text}")
+            self._send_service_message(seller_id, order['buyer_id'], 'order.service_refund_rejected', 
+                                     order_id=order_id, reason_text=reason_text)
         return updated > 0
     
-    def _send_service_message(self, sender_id: int, receiver_id: int, content: str):
+    def _send_service_message(self, sender_id: int, receiver_id: int, translation_key: str, **params):
         """
         发送服务消息（内部辅助方法）
         
         Args:
             sender_id: 发送者user_id
             receiver_id: 接收者user_id
-            content: 消息内容
+            translation_key: 翻译键（如 'order.service_order_created'）
+            **params: 翻译参数（如 order_id=123）
         """
         try:
-            # 直接插入消息表（现在seller_id就是user_id）
+            import json
+            # 将翻译键和参数存储为 JSON
+            content_data = {
+                'key': translation_key,
+                'params': params
+            }
+            content = json.dumps(content_data, ensure_ascii=False)
+            
+            # 插入消息表，msg_type 为 'service'
             insert_query = """
                 INSERT INTO messages (sender_id, receiver_id, content, msg_type, status)
-                VALUES (?, ?, ?, 'text', 'sent')
+                VALUES (?, ?, ?, 'service', 'sent')
             """
             self.db.execute_insert(insert_query, (sender_id, receiver_id, content))
         except Exception as e:
@@ -339,6 +423,7 @@ class OrderService:
         order.shipped_at = parse_dt(row.get('shipped_at'))
         order.completed_at = parse_dt(row.get('completed_at'))
         order.tracking_number = row.get('tracking_number')
+        order.refund_reject_reason = row.get('refund_reject_reason')
         return order
     
     def get_orders_by_buyer(self, buyer_id: int, 
